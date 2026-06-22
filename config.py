@@ -1,39 +1,59 @@
 import os
 
-# Specify the LLM model to use. You can choose any LLM supported by LiteLLM.
-# Example options include "gpt-4o", "claude", "deepseek-chat", etc.
-# For a full list of supported models, refer to:
-# https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
-LLM_MODEL = "gemini/gemini-2.0-flash"
+# LLM — DeepSeek via LiteLLM
+# https://docs.litellm.ai/docs/providers/deepseek
+LLM_MODEL = "deepseek/deepseek-chat"
+API_TOKEN = os.getenv("DEEPSEEK_API_KEY")
 
-# API token for authentication with the LLM provider.
-# This is fetched from the environment variable "GEMINI_API_KEY".
-API_TOKEN = os.getenv("GEMINI_API_KEY")
+# Crawl settings
+REQUEST_DELAY_SECONDS = 2
+MAX_RESULT_PAGES = 100
+OUTPUT_DIR = "output"
+HEADLESS = True
 
-# Base URL of the website to scrape.
-# In this example, we are scraping Yellow Pages for dentists in Toronto, ON.
-# You can modify the URL to change the location or the type of business.
-# Example:
-# - For plumbers in Vancouver: "https://www.yellowpages.ca/search/si/{page_number}/Plumbers/Vancouver+BC"
-# - For restaurants in Montreal: "https://www.yellowpages.ca/search/si/{page_number}/Restaurants/Montreal+QC"
-BASE_URL = "https://www.yellowpages.ca/search/si/{page_number}/Dentists/Toronto+ON"
+# Website enrichment — paths to probe for extra contacts
+WEBSITE_PATHS = [
+    "",
+    "/contact",
+    "/contact-us",
+    "/contactez-nous",
+    "/nous-contacter",
+    "/about",
+    "/about-us",
+    "/a-propos",
+    "/qui-sommes-nous",
+    "/mentions-legales",
+    "/legal",
+    "/legal-notice",
+    "/privacy",
+    "/privacy-policy",
+    "/impressum",
+]
 
-# CSS selector to target the main HTML element containing the business information.
-# This is specific to Yellow Pages and helps focus the scraper on relevant content
-# instead of sending the entire HTML page to the LLM.
-CSS_SELECTOR = "[class^='listing_right_section']"
+LISTING_INSTRUCTIONS = (
+    "You are analyzing a business directory search-results or category page "
+    "(GoAfricaOnline, Pages Jaunes, Kompass, Europages, YellowPages, etc.).\n"
+    "1. Identify every real company listing. IGNORE advertisements, sponsored results, "
+    "navigation links, filters, and pagination controls themselves.\n"
+    "2. For each company, extract the profile_url (absolute URL to the company detail page) "
+    "and company_name if visible.\n"
+    "3. Find the next_page_url: the absolute URL to the next page of results. "
+    "Leave empty if this is the last page.\n"
+    "Adapt to the HTML structure of the site — field labels and layouts vary."
+)
 
-# Maximum number of pages to crawl. Adjust this value based on how much data you want to scrape.
-MAX_PAGES = 3  # Example: Set to 5 to scrape 5 pages.
+PROFILE_INSTRUCTIONS = (
+    "Extract complete B2B lead data from this company profile/detail page.\n"
+    "Fields: company_name, industry, description, address, city, country, phone, "
+    "secondary_phones (list), email, emails (list), website, facebook, linkedin, "
+    "instagram, whatsapp, latitude, longitude.\n"
+    "Use empty strings for missing scalar fields and empty lists for missing lists.\n"
+    "Extract emails and phones even from free text. Ignore ads."
+)
 
-# Instructions for the LLM on what information to extract from the scraped content.
-# The LLM will extract the following details for each business:
-# - Name
-# - Address
-# - Website
-# - Phone number
-# - A one-sentence description
-SCRAPER_INSTRUCTIONS = (
-    "Extract all business information: 'name', 'address', 'website'"
-    ", 'phone number' and a one-sentence 'description' from the following content."
+WEBSITE_INSTRUCTIONS = (
+    "Extract contact information from this company website page.\n"
+    "Fields: phone, secondary_phones, email, emails, website, facebook, linkedin, "
+    "instagram, whatsapp.\n"
+    "Focus on footer, contact sections, and legal mentions. Use empty values when absent."
 )

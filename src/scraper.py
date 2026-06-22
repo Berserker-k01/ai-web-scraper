@@ -1,6 +1,7 @@
 import json
-from pydantic import BaseModel
-from typing import List, Set, Tuple
+from typing import List, Optional, Type
+from urllib.parse import urljoin, urlparse
+
 from crawl4ai import (
     AsyncWebCrawler,
     BrowserConfig,
@@ -8,60 +9,63 @@ from crawl4ai import (
     CrawlerRunConfig,
     LLMExtractionStrategy,
 )
-from src.utils import is_duplicated
-from config import LLM_MODEL, API_TOKEN
+from pydantic import BaseModel
+
+from config import API_TOKEN, HEADLESS, LLM_MODEL
 
 
 def get_browser_config() -> BrowserConfig:
-    """
-    Returns the browser configuration for the crawler.
-
-    Returns:
-        BrowserConfig: The configuration settings for the browser.
-    """
-    # https://docs.crawl4ai.com/core/browser-crawler-config/
     return BrowserConfig(
-        browser_type="chromium",  # Type of browser to simulate
-        headless=True,  # Whether to run in headless mode (no GUI)
-        verbose=True,  # Enable verbose logging
+        browser_type="chromium",
+        headless=HEADLESS,
+        verbose=False,
     )
 
 
-def get_llm_strategy(llm_instructions: str, output_format: BaseModel) -> LLMExtractionStrategy:
-    """
-    Returns the configuration for the language model extraction strategy.
-
-    Returns:
-        LLMExtractionStrategy: The settings for how to extract data using LLM.
-    """
-    # https://docs.crawl4ai.com/api/strategies/#llmextractionstrategy
+def get_llm_strategy(
+    llm_instructions: str,
+    output_format: Type[BaseModel],
+) -> LLMExtractionStrategy:
     return LLMExtractionStrategy(
-        provider=LLM_MODEL,  # Name of the LLM provider
-        api_token=API_TOKEN,  # API token for authentication
-        schema=output_format.model_json_schema(),  # JSON schema of the data model
-        extraction_type="schema",  # Type of extraction to perform
-        instruction=llm_instructions,  # Instructions for the LLM
-        input_format="markdown",  # Format of the input content
-        verbose=True,  # Enable verbose logging
+        provider=LLM_MODEL,
+        api_token=API_TOKEN,
+        schema=output_format.model_json_schema(),
+        extraction_type="schema",
+        instruction=llm_instructions,
+        input_format="markdown",
+        verbose=False,
     )
 
-async def check_no_results(
+
+def _parse_llm_result(raw: str) -> list | dict | None:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _unwrap_items(data) -> list:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return [data]
+    return []
+
+
+def _first_valid_item(items: list) -> Optional[dict]:
+    for item in items:
+        if isinstance(item, dict) and not item.get("error"):
+            return item
+    return None
+
+
+async def fetch_page_markdown(
     crawler: AsyncWebCrawler,
     url: str,
     session_id: str,
-) -> bool:
-    """
-    Checks if the "No Results Found" message is present on the page.
-
-    Args:
-        crawler (AsyncWebCrawler): The web crawler instance.
-        url (str): The URL to check.
-        session_id (str): The session identifier.
-
-    Returns:
-        bool: True if "No Results Found" message is found, False otherwise.
-    """
-    # Fetch the page without any CSS selector or extraction strategy
+) -> tuple[bool, str, str]:
     result = await crawler.arun(
         url=url,
         config=CrawlerRunConfig(
@@ -69,98 +73,54 @@ async def check_no_results(
             session_id=session_id,
         ),
     )
+    if not result.success:
+        return False, "", result.error_message or "Fetch failed"
 
-    if result.success:
-        if "No Results Found" in result.cleaned_html:
-            return True
-    else:
-        print(
-            f"Error fetching page for 'No Results Found' check: {result.error_message}"
-        )
-
-    return False
+    content = result.markdown or result.cleaned_html or ""
+    return True, content, ""
 
 
-async def fetch_and_process_page(
+async def extract_with_llm(
     crawler: AsyncWebCrawler,
-    page_number: int,
-    base_url: str,
-    css_selector: str,
-    llm_strategy: LLMExtractionStrategy,
+    url: str,
     session_id: str,
-    seen_names: Set[str],
-) -> Tuple[List[dict], bool]:
-    """
-    Fetches and processes a single page from yellowpages.
-
-    Args:
-        crawler (AsyncWebCrawler): The web crawler instance.
-        page_number (int): The page number to fetch.
-        base_url (str): The base URL of the website.
-        css_selector (str): The CSS selector to target the content.
-        llm_strategy (LLMExtractionStrategy): The LLM extraction strategy.
-        session_id (str): The session identifier.
-        required_keys (List[str]): List of required keys in the business data.
-        seen_names (Set[str]): Set of business names that have already been seen.
-
-    Returns:
-        Tuple[List[dict], bool]:
-            - List[dict]: A list of processed businesss from the page.
-            - bool: A flag indicating if the "No Results Found" message was encountered.
-    """
-    url = base_url.format(page_number=page_number)
-    print(f"Loading page {page_number}...")
-
-    # Check if "No Results Found" message is present
-    no_results = await check_no_results(crawler, url, session_id)
-    if no_results:
-        return [], True  # No more results, signal to stop crawling
-
-    # Fetch page content with the extraction strategy
+    llm_strategy: LLMExtractionStrategy,
+) -> Optional[dict]:
     result = await crawler.arun(
         url=url,
         config=CrawlerRunConfig(
-            cache_mode=CacheMode.BYPASS,  # Do not use cached data
-            extraction_strategy=llm_strategy,  # Strategy for data extraction
-            css_selector=css_selector,  # Target specific content on the page
-            session_id=session_id,  # Unique session ID for the crawl
+            cache_mode=CacheMode.BYPASS,
+            extraction_strategy=llm_strategy,
+            session_id=session_id,
         ),
     )
+    if not result.success or not result.extracted_content:
+        return None
 
-    if not (result.success and result.extracted_content):
-        print(f"Error fetching page {page_number}: {result.error_message}")
-        return [], False
+    data = _parse_llm_result(result.extracted_content)
+    if data is None:
+        return None
 
-    # Parse extracted content
-    extracted_data = json.loads(result.extracted_content)
-    if not extracted_data:
-        print(f"No businesss found on page {page_number}.")
-        return [], False
+    if isinstance(data, dict):
+        if "companies" in data:
+            return data
+        return data
 
-    # After parsing extracted content
-    print("Extracted data:", extracted_data)
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and item.get("companies") is not None:
+                return item
+        return _first_valid_item(data)
 
-    # Process businesss
-    all_businesses = []
-    for business in extracted_data:
-        # Debugging: Print each business to understand its structure
-        print("Processing business:", business)
+    return None
 
-        # Ignore the 'error' key if it's False
-        if business.get("error") is False:
-            business.pop("error", None)  # Remove the 'error' key if it's False
 
-        if is_duplicated(business["name"], seen_names):
-            print(f"Duplicate business '{business['name']}' found. Skipping.")
-            continue  # Skip duplicate businesss
+def absolutize_url(base_url: str, link: str) -> str:
+    link = (link or "").strip()
+    if not link:
+        return ""
+    return urljoin(base_url, link)
 
-        # Add business to the list
-        seen_names.add(business["name"])
-        all_businesses.append(business)
 
-    if not all_businesses:
-        print(f"No complete businesss found on page {page_number}.")
-        return [], False
-
-    print(f"Extracted {len(all_businesses)} businesss from page {page_number}.")
-    return all_businesses, False  # Continue crawling
+def same_domain(url_a: str, url_b: str) -> bool:
+    return urlparse(url_a).netloc.lower() == urlparse(url_b).netloc.lower()

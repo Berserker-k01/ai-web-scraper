@@ -1,88 +1,55 @@
+import argparse
 import asyncio
-from crawl4ai import AsyncWebCrawler
+import sys
+
 from dotenv import load_dotenv
-from config import BASE_URL, CSS_SELECTOR, MAX_PAGES, SCRAPER_INSTRUCTIONS
-from src.utils import save_data_to_csv
-from src.scraper import (
-    get_browser_config,
-    get_llm_strategy,
-    fetch_and_process_page
-)
-from models.business import BusinessData
 
 load_dotenv()
 
 
-async def crawl_yellowpages():
-    """
-    Main function to crawl businesses data from the website.
-    """
-    # Initialize configurations
-    browser_config = get_browser_config()
-    llm_strategy = get_llm_strategy(
-        llm_instructions=SCRAPER_INSTRUCTIONS,  # Instructions for the LLM
-        output_format=BusinessData # Data output format
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="B2B Lead Scraper — génération de leads depuis des annuaires professionnels."
     )
-    session_id = "crawler_session"
+    parser.add_argument(
+        "--url",
+        required=True,
+        help="URL de la page de recherche ou catégorie à scraper.",
+    )
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Lancer l'interface web (équivalent à python app.py).",
+    )
+    args = parser.parse_args()
 
-    # Initialize state variables
-    page_number = 1
-    all_records = []
-    seen_names = set()
+    if args.web:
+        import uvicorn
+        uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+        return
 
-    # Start the web crawler context
-    # https://docs.crawl4ai.com/api/async-webcrawler/#asyncwebcrawler
-    async with AsyncWebCrawler(config=browser_config) as crawler:
-        while True:
-            # Fetch and process data from the current page
-            records, no_results_found = await fetch_and_process_page(
-                crawler,
-                page_number,
-                BASE_URL,
-                CSS_SELECTOR,
-                llm_strategy,
-                session_id,
-                seen_names,
-            )
+    from config import API_TOKEN
+    if not API_TOKEN:
+        print("Erreur : DEEPSEEK_API_KEY manquante dans .env")
+        sys.exit(1)
 
-            if no_results_found:
-                print("No more records found. Ending crawl.")
-                break  # Stop crawling when "No Results Found" message appears
+    from src.lead_scraper import LeadScraper
+    from src.progress import ProgressTracker
 
-            if not records:
-                print(f"No records extracted from page {page_number}.")
-                break  # Stop if no records are extracted
+    tracker = ProgressTracker()
 
-            # Add the records from this page to the total list
-            all_records.extend(records)
-            page_number += 1  # Move to the next 
-            
-            if page_number > MAX_PAGES:
-                break
+    async def run():
+        scraper = LeadScraper(progress=tracker)
+        leads = await scraper.run(args.url)
+        snap = tracker.snapshot()
+        print(f"\n✓ {len(leads)} entreprises extraites.")
+        if snap.get("export_files"):
+            for fmt, path in snap["export_files"].items():
+                print(f"  {fmt.upper()} : {path}")
+        print("\nPour l'interface web : python app.py  ou  docker compose up")
 
-            # Pause between requests to avoid rate limits
-            await asyncio.sleep(2)  # Adjust sleep time as needed
-
-    # Save the collected records to a CSV file
-    if all_records:
-        save_data_to_csv(
-            records=all_records, 
-            data_struct=BusinessData,
-            filename="businesses_data.csv"
-        )
-    else:
-        print("No records were found during the crawl.")
-
-    # Display usage statistics for the LLM strategy
-    llm_strategy.show_usage()
-
-
-async def main():
-    """
-    Entry point of the script.
-    """
-    await crawl_yellowpages()
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

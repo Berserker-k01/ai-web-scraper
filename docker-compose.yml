@@ -1,0 +1,26 @@
+services:
+  scraper:
+    build: .
+    container_name: b2b-lead-scraper
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUTF8=1
+    volumes:
+      - ./output:/app/output
+    shm_size: "2gb"
+    restart: unless-stopped
+
+  scraper-cli:
+    build: .
+    profiles: [cli]
+    env_file:
+      - .env
+    environment:
+      - PYTHONUTF8=1
+    volumes:
+      - ./output:/app/output
+    shm_size: "2gb"
+    entrypoint: ["python", "main.py"]

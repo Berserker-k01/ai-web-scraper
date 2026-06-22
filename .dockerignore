@@ -1,0 +1,15 @@
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+.env
+output/
+*.csv
+*.xlsx
+.idea/
+.vscode/
+.cursor/
+agent-tools/
+terminals/
